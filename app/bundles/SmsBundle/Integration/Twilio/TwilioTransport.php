@@ -8,14 +8,9 @@ use libphonenumber\PhoneNumberUtil;
 use Mautic\LeadBundle\Entity\Lead;
 use Mautic\SmsBundle\Sms\TransportInterface;
 use Psr\Log\LoggerInterface;
-use Twilio\Exceptions\ConfigurationException;
-use Twilio\Exceptions\TwilioException;
-use Twilio\Rest\Client;
 
 class TwilioTransport implements TransportInterface
 {
-    private ?Client $client = null;
-
     public function __construct(
         private Configuration $configuration,
         private LoggerInterface $logger
@@ -23,6 +18,7 @@ class TwilioTransport implements TransportInterface
     }
 
     /**
+     * @param Lead $lead
      * @param string $content
      *
      * @return bool|string
@@ -36,13 +32,60 @@ class TwilioTransport implements TransportInterface
         }
 
         try {
-            $messagingServiceSid = $this->configuration->getMessagingServiceSid();
-            $this->configureClient();
+            // Configurando a URL do webhook e o valor do cabeçalho
+           $webhookUrl = trim((string) $this->configuration->getAccountSid());
+           $authToken = trim((string) $this->configuration->getAuthToken());
 
-            $this->client->messages->create(
-                $this->sanitizeNumber($number),
-                $this->createPayload($messagingServiceSid, $content)
-            );
+           
+
+            // Garantindo que o authToken seja uma string
+            if (!is_string($authToken)) {
+                $authToken = json_encode($authToken);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $authToken = '';
+                }
+            }
+
+            // Dados a serem enviados no corpo da requisição
+            $data = [
+                'to' => $this->sanitizeNumber($number),
+                'message' => $content,
+            ];
+
+            // Validar JSON
+            $jsonPayload = json_encode($data);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new \Exception('Erro ao codificar JSON: ' . json_last_error_msg());
+            }
+
+            // Configurando cURL para enviar ao webhook
+            $ch = curl_init($webhookUrl);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonPayload);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                'Content-Type: application/json',
+                'dados_extras: ' . $authToken, // Cabeçalho adicional
+     
+            ]);
+
+            $this->logger->info('Enviando dados para o webhook', ['url' => $webhookUrl, 'payload' => $data]);
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            if (curl_errno($ch)) {
+                $error = curl_error($ch);
+                curl_close($ch);
+                throw new \Exception("Erro cURL: $error");
+            }
+
+            curl_close($ch);
+
+            // Verifica se houve erro na resposta do webhook
+            if ($httpCode !== 200) {
+                throw new \Exception("Webhook respondeu com código HTTP $httpCode");
+            }
 
             return true;
         } catch (NumberParseException $numberParseException) {
@@ -52,21 +95,13 @@ class TwilioTransport implements TransportInterface
             );
 
             return $numberParseException->getMessage();
-        } catch (ConfigurationException $configurationException) {
-            $message = $configurationException->getMessage() ?: 'mautic.sms.transport.twilio.not_configured';
+        } catch (\Exception $exception) {
             $this->logger->warning(
-                $message,
-                ['exception' => $configurationException]
+                $exception->getMessage(),
+                ['exception' => $exception]
             );
 
-            return $message;
-        } catch (TwilioException $twilioException) {
-            $this->logger->warning(
-                $twilioException->getMessage(),
-                ['exception' => $twilioException]
-            );
-
-            return $twilioException->getMessage();
+            return $exception->getMessage();
         }
     }
 
@@ -79,36 +114,9 @@ class TwilioTransport implements TransportInterface
      */
     private function sanitizeNumber($number)
     {
-        $util   = PhoneNumberUtil::getInstance();
+        $util = PhoneNumberUtil::getInstance();
         $parsed = $util->parse($number, 'US');
 
         return $util->format($parsed, PhoneNumberFormat::E164);
-    }
-
-    /**
-     * @return mixed[]
-     */
-    private function createPayload(string $messagingServiceSid, string $content): array
-    {
-        return [
-            'messagingServiceSid' => $messagingServiceSid,
-            'body'                => $content,
-        ];
-    }
-
-    /**
-     * @throws ConfigurationException
-     */
-    private function configureClient(): void
-    {
-        if ($this->client) {
-            // Already configured
-            return;
-        }
-
-        $this->client = new Client(
-            $this->configuration->getAccountSid(),
-            $this->configuration->getAuthToken()
-        );
     }
 }
