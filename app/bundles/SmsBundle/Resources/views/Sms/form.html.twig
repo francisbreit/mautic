@@ -15,24 +15,23 @@
     <div class="col-md-6">
         {{ form_row(form.name) }}
     </div>
-    {# NOVO CAMPO: Seletor de Estratégia de Disparo #}
     <div class="col-md-6">
         {{ form_row(form.tipo_disparo) }}
     </div>
 </div>
 
 <div class="row">
-    {# NOVO CAMPO: Remetente / Dono #}
     <div class="col-md-6">
         {{ form_row(form.ui_remetente) }}
     </div>
-    {# NOVO CAMPO: Template (Aparece apenas quando Typebot é selecionado) #}
-    <div class="col-md-6">
+    {# ID EXPLÍCITO PARA OCULTAR O BLOCO DO TEMPLATE #}
+    <div class="col-md-6" id="box_template">
         {{ form_row(form.ui_template) }}
     </div>
 </div>
 
-<div class="row">
+{# ID EXPLÍCITO PARA OCULTAR TODO O BLOCO DA MENSAGEM LIVRE E CONTADOR #}
+<div class="row" id="box_mensagem">
     <div class="col-md-12">
         <div class="characters-count">
             <label class="control-label" for="" data-toggle="tooltip" data-container="body" data-placement="top" title="" data-original-title="{{ 'mautic.sms.form.nbcharacter.infobox'|trans }}">
@@ -40,15 +39,12 @@
                 <span size="sm" class="label label-gray" id="sms_nb_char">0</span>
             </label>
         </div>
-        
-        {# NOVO CAMPO: Mensagem (Aparece apenas quando Texto/SMS é selecionado) #}
-        {{ form_row(form.ui_mensagem) }}
-        
-        {# CAMPO ORIGINAL (Oculto pela classe/id no SmsType, mas obrigatório para o Mautic salvar) #}
-        {{ form_row(form.message) }}
-        
-        <i class="text-secondary">{{ 'mautic.sms.token.dropdown.hint'|trans|purify }}</i>
 
+        {{ form_row(form.ui_mensagem) }}
+
+        {{ form_row(form.message) }}
+
+        <i class="text-secondary">{{ 'mautic.sms.token.dropdown.hint'|trans|purify }}</i>
     </div>
 </div>
 {% endblock %}
@@ -101,75 +97,40 @@
         }
     ) -}}
 {% endif %}
-{% endblock %}
 
 {# ========================================================================= #}
-{# SCRIPT DE CONTROLE DINÂMICO DA INTERFACE (MNO WHATSAPP SETUP)             #}
+{# SCRIPT NUCLEAR MNO: MONITORAMENTO DE ESTADO (IGNORA BLOQUEIOS DO MAUTIC)  #}
 {# ========================================================================= #}
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Aguarda um pequeno delay para garantir que o Symfony/Mautic renderizou o modal
-    setTimeout(function() {
-        const seletorTipo = document.getElementById('tipo_disparo_selector');
-        const boxTemplate = document.getElementById('ui_template_field') ? document.getElementById('ui_template_field').closest('div.form-group') : null;
-        const boxMensagem = document.getElementById('ui_mensagem_field') ? document.getElementById('ui_mensagem_field').closest('div.form-group') : null;
-        const campoOcultoPayload = document.getElementById('mensagem_original_oculta');
+    var mnoUltimoValor = null;
 
-        if (!seletorTipo || !campoOcultoPayload) return; // Evita erros se a aba não estiver carregada
+    // Roda a cada 400ms para sempre, garantindo que pega o formulário mesmo após o AJAX
+    setInterval(function() {
+        // Busca o campo pelo ID ou pelo atributo name do Symfony (garantia em dobro)
+        var seletor = document.getElementById('tipo_disparo_selector') || document.querySelector('select[name="sms[tipo_disparo]"]');
+        var boxTemplate = document.getElementById('box_template');
+        var boxMensagem = document.getElementById('box_mensagem');
 
-        // 1. Função para esconder/mostrar campos baseado na escolha
-        function atualizarCamposVisiveis() {
-            const tipo = seletorTipo.value;
-            if (tipo.includes('typebot')) {
-                if (boxTemplate) boxTemplate.style.display = 'block';
-                if (boxMensagem) boxMensagem.style.display = 'none';
-            } else {
-                if (boxTemplate) boxTemplate.style.display = 'none';
-                if (boxMensagem) boxMensagem.style.display = 'block';
+        // Se os elementos estiverem na tela...
+        if (seletor && boxTemplate && boxMensagem) {
+            var valorAtual = seletor.value;
+
+            // Só manipula a tela se o valor mudar (ou for a primeira vez que lê)
+            if (valorAtual !== mnoUltimoValor) {
+                mnoUltimoValor = valorAtual;
+
+                if (valorAtual.indexOf('typebot') !== -1) {
+                    boxTemplate.style.display = 'block';
+                    boxMensagem.style.display = 'none';
+                } else {
+                    boxTemplate.style.display = 'none';
+                    boxMensagem.style.display = 'block';
+                }
             }
+        } else {
+            // Se o usuário saiu da tela, reseta o rastreador
+            mnoUltimoValor = null;
         }
-
-        // 2. Função de Engenharia Reversa (Para edição de campanhas já salvas)
-        function carregarDadosExistentes() {
-            const payloadAtual = campoOcultoPayload.value;
-            if (!payloadAtual) return;
-
-            // Extrai o remetente comum a todos
-            const matchRemetente = payloadAtual.match(/remetente:\s*(.*)/);
-            if (matchRemetente && document.getElementById('ui_remetente_field')) {
-                document.getElementById('ui_remetente_field').value = matchRemetente[1].trim();
-            }
-
-            // Detecta qual tipo de payload foi salvo no banco e preenche a UI
-            if (payloadAtual.includes('template_oficial:')) {
-                seletorTipo.value = 'wa_oficial_typebot';
-                const m = payloadAtual.match(/template_oficial:\s*(.*)/);
-                if(m && document.getElementById('ui_template_field')) document.getElementById('ui_template_field').value = m[1].trim();
-
-            } else if (payloadAtual.includes('template:')) {
-                seletorTipo.value = 'wa_nao_oficial_typebot';
-                const m = payloadAtual.match(/template:\s*(.*)/);
-                if(m && document.getElementById('ui_template_field')) document.getElementById('ui_template_field').value = m[1].trim();
-
-            } else if (payloadAtual.includes('mensagem_whatsapp:')) {
-                seletorTipo.value = 'wa_nao_oficial_texto';
-                const m = payloadAtual.match(/mensagem_whatsapp:\s*(.*?)\nnumber:/s);
-                if(m && document.getElementById('ui_mensagem_field')) document.getElementById('ui_mensagem_field').value = m[1].trim();
-
-            } else if (payloadAtual.includes('mensagem_sms:')) {
-                seletorTipo.value = 'sms_simples';
-                const m = payloadAtual.match(/mensagem_sms:\s*(.*?)\nnumber:/s);
-                if(m && document.getElementById('ui_mensagem_field')) document.getElementById('ui_mensagem_field').value = m[1].trim();
-            }
-        }
-
-        // Executa ao carregar a interface
-        carregarDadosExistentes();
-        atualizarCamposVisiveis();
-
-        // Fica ouvindo as mudanças no dropdown
-        seletorTipo.addEventListener('change', atualizarCamposVisiveis);
-        
-    }, 500); // 500ms de delay de segurança
-});
+    }, 400);
 </script>
+{% endblock %}
