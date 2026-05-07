@@ -15,7 +15,7 @@ use Mautic\LeadBundle\Form\Type\LeadListType;
 use Mautic\ProjectBundle\Form\Type\ProjectType;
 use Mautic\SmsBundle\Entity\Sms;
 use Symfony\Component\Form\AbstractType;
-use Symfony\Component\Form\Extension\Core\Type\ChoiceType; // <-- Adicionado para o Dropdown
+use Symfony\Component\Form\Extension\Core\Type\ChoiceType;
 use Symfony\Component\Form\Extension\Core\Type\HiddenType;
 use Symfony\Component\Form\Extension\Core\Type\LocaleType;
 use Symfony\Component\Form\Extension\Core\Type\TextareaType;
@@ -40,6 +40,48 @@ class SmsType extends AbstractType
         $builder->addEventSubscriber(new CleanFormSubscriber(['content' => 'html', 'customHtml' => 'html']));
         $builder->addEventSubscriber(new FormExitSubscriber('sms.sms', $options));
 
+        // ==========================================
+        // ENGENHARIA REVERSA: LER O PAYLOAD SALVO
+        // ==========================================
+        $smsEntity = $options['data'] ?? null;
+        $mensagemSalva = $smsEntity ? $smsEntity->getMessage() : '';
+
+        $valTipo = 'wa_nao_oficial_typebot'; // Valor padrão
+        $valTemplate = '';
+        $valMensagem = '';
+        $valRemetente = '';
+
+        if (!empty($mensagemSalva)) {
+            // Extrai o Remetente
+            if (preg_match('/remetente:\s*(.*)/', $mensagemSalva, $matches)) {
+                $valRemetente = trim($matches[1]);
+            }
+
+            // Identifica o tipo de disparo e extrai o conteúdo correto
+            if (strpos($mensagemSalva, 'template_oficial:') !== false) {
+                $valTipo = 'wa_oficial_typebot';
+                if (preg_match('/template_oficial:\s*(.*?)(?=\s*number:)/s', $mensagemSalva, $matches)) {
+                    $valTemplate = trim($matches[1]);
+                }
+            } elseif (strpos($mensagemSalva, 'template:') !== false) {
+                $valTipo = 'wa_nao_oficial_typebot';
+                if (preg_match('/template:\s*(.*?)(?=\s*number:)/s', $mensagemSalva, $matches)) {
+                    $valTemplate = trim($matches[1]);
+                }
+            } elseif (strpos($mensagemSalva, 'mensagem_whatsapp:') !== false) {
+                $valTipo = 'wa_nao_oficial_texto';
+                if (preg_match('/mensagem_whatsapp:\s*(.*?)(?=\s*number:)/s', $mensagemSalva, $matches)) {
+                    $valMensagem = trim($matches[1]);
+                }
+            } elseif (strpos($mensagemSalva, 'mensagem_sms:') !== false) {
+                $valTipo = 'sms_simples';
+                if (preg_match('/mensagem_sms:\s*(.*?)(?=\s*number:)/s', $mensagemSalva, $matches)) {
+                    $valMensagem = trim($matches[1]);
+                }
+            }
+        }
+        // ==========================================
+
         $builder->add(
             'name',
             TextType::class,
@@ -62,44 +104,47 @@ class SmsType extends AbstractType
         );
 
         // ==========================================
-        // INÍCIO DOS CAMPOS CUSTOMIZADOS DO SETUP MNO
+        // CAMPOS DA INTERFACE MNO
         // ==========================================
-        
         $builder->add('tipo_disparo', ChoiceType::class, [
             'label' => 'Estratégia de Disparo (Roteamento n8n)',
             'label_attr' => ['class' => 'control-label font-weight-bold text-primary'],
-            'mapped' => false, 
+            'mapped' => false,
+            'data'   => $valTipo,
             'choices' => [
                 'WhatsApp (API Não Oficial) - Fluxo Typebot' => 'wa_nao_oficial_typebot',
                 'WhatsApp (API Não Oficial) - Texto Livre' => 'wa_nao_oficial_texto',
-                'WhatsApp (API Oficial Meta) - Fluxo Typebot' => 'wa_oficial_typebot',
+                'WhatsApp (API Oficial Meta) - Template' => 'wa_oficial_typebot',
                 'SMS Tradicional' => 'sms_simples',
             ],
             'attr' => ['class' => 'form-control', 'id' => 'tipo_disparo_selector'],
         ]);
 
         $builder->add('ui_template', TextType::class, [
-            'label' => 'Nome do Template (Typebot)',
+            'label' => 'Nome do Template',
             'mapped' => false,
             'required' => false,
+            'data'   => $valTemplate,
             'attr' => ['class' => 'form-control', 'id' => 'ui_template_field'],
         ]);
 
         $builder->add('ui_mensagem', TextareaType::class, [
-            'label' => 'Conteúdo da Mensagem',
+            'label' => 'Conteúdo da Mensagem (\n para pular linha)',
             'mapped' => false,
             'required' => false,
+            'data'   => $valMensagem,
             'attr' => ['class' => 'form-control', 'id' => 'ui_mensagem_field', 'rows' => 4],
         ]);
 
         $builder->add('ui_remetente', TextType::class, [
-            'label' => 'Dono / Nome da Instância (Ex: Business3)',
+            'label' => 'Dono / Nome da Instância',
             'mapped' => false,
             'required' => false,
+            'data'   => $valRemetente,
             'attr' => ['class' => 'form-control', 'id' => 'ui_remetente_field'],
         ]);
 
-        // O CAMPO ORIGINAL DO MAUTIC FOI OCULTADO
+        // CAMPO ORIGINAL OCULTO
         $builder->add(
             'message',
             TextareaType::class,
@@ -108,7 +153,7 @@ class SmsType extends AbstractType
                 'label_attr' => ['class' => 'control-label', 'style' => 'display:none;'],
                 'attr'       => [
                     'class'                => 'form-control',
-                    'style'                => 'display:none;', // Invisível na tela
+                    'style'                => 'display:none;',
                     'data-token-activator' => '{',
                     'data-token-visual'    => 'false',
                     'rows'                 => 6,
@@ -117,14 +162,11 @@ class SmsType extends AbstractType
             ]
         );
         // ==========================================
-        // FIM DOS CAMPOS CUSTOMIZADOS
-        // ==========================================
 
         $builder->add('isPublished', YesNoButtonGroupType::class, [
             'label' => 'mautic.core.form.available',
         ]);
 
-        // add lead lists
         $transformer = new IdToEntityModelTransformer($this->em, \Mautic\LeadBundle\Entity\LeadList::class, 'id', true);
         $builder->add(
             $builder->create(
@@ -147,7 +189,6 @@ class SmsType extends AbstractType
         $builder->add('publishUp', PublishUpDateType::class);
         $builder->add('publishDown', PublishDownDateType::class);
 
-        // add category
         $builder->add(
             'category',
             CategoryListType::class,
@@ -180,8 +221,8 @@ class SmsType extends AbstractType
         );
 
         $builder->add(
-            'translationParentSelector', 
-            SmsListType::class, 
+            'translationParentSelector',
+            SmsListType::class,
             [
                 'label'      => 'mautic.core.form.translation_parent',
                 'label_attr' => ['class' => 'control-label'],
@@ -206,12 +247,11 @@ class SmsType extends AbstractType
             FormEvents::PRE_SUBMIT,
             function (FormEvent $event) {
                 $data = $event->getData();
-                
+
                 if (isset($data['translationParentSelector'])) {
                     $data['translationParent'] = $data['translationParentSelector'];
                 }
 
-                // Pega os campos soltos que o usuário digitou e compila no formato do n8n
                 if (isset($data['tipo_disparo'])) {
                     $tipo = $data['tipo_disparo'];
                     $template = $data['ui_template'] ?? '';
@@ -235,7 +275,6 @@ class SmsType extends AbstractType
                             break;
                     }
 
-                    // Sobrescreve o campo "message" real do Mautic com o payload completo
                     $data['message'] = $payload;
                 }
 
